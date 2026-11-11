@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>IRON DELUGE — Tactical Armored Mech Arena Combat</title>
+  <meta name="description" content="Pilot a heavy bipedal armored mech across flooded brutalist ruins in real-time WebGL2 with dynamic monsoon storms, planar reflections, destructible concrete cover, and multi-lock missile barrages." />
+  <meta name="theme-color" content="#0d1216" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="./css/styles.css" />
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/three.module.min.js",
+      "three/addons/": "./vendor/three/addons/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="viewport-container">
+    <canvas id="game-canvas" aria-label="IRON DELUGE 3D Mech Arena Viewport"></canvas>
+  </div>
+
+  <!-- Shader & PBR Prewarm Boot Overlay -->
+  <div id="boot-screen" role="status" aria-live="polite">
+    <div class="boot-backdrop"></div>
+    <div class="boot-content">
+      <div class="boot-code">UNIT // AC-04 VANGUARD — BASIN SECTOR 09</div>
+      <div class="boot-bar-track">
+        <div id="boot-progress-fill" class="boot-bar-fill"></div>
+      </div>
+      <div id="boot-status-text" class="boot-status">INITIALIZING WEBGL2 HDR PIPELINE...</div>
+    </div>
+  </div>
+
+  <!-- Title / Sortie Briefing Overlay (Live 3D Scene Renders Behind) -->
+  <main id="title-screen" class="overlay-screen">
+    <header class="title-top-bar">
+      <div class="sys-tag">SORTIE BRIEFING // FLOODED MONOLITH BASIN</div>
+      <div class="sys-metrics">
+        <span id="title-gpu-tag">WEBGL2 PBR // ACES FILMIC</span>
+      </div>
+    </header>
+
+    <section class="title-hero-panel">
+      <p class="title-kicker">HEAVY ARMORED CORE COMBAT SIMULATION</p>
+      <h1 class="title-heading">IRON DELUGE</h1>
+      <p class="title-summary">
+        Engage autonomous siege frames across a submerged brutalist colosseum. Skate floodwaters on vectored Vernier thrusters, shatter reinforced pillars, and unleash multi-lock homing missile salvos before Leviathan breaches the floodgate.
+      </p>
+
+      <div class="title-actions">
+        <button id="btn-deploy" class="btn-primary" type="button">
+          <span class="btn-label">SORTIE // DEPLOY</span>
+          <span class="btn-sub">INITIALIZE NEURAL LINK &amp; AUDIO</span>
+        </button>
+      </div>
+
+      <div class="settings-strip" aria-label="Graphics and System Configuration">
+        <div class="setting-row">
+          <span class="setting-label">RENDER TIER</span>
+          <div id="title-quality-group" class="segmented-group" role="group" aria-label="Graphics Quality Preset">
+            <button id="btn-q-ultra" class="seg-btn is-active" data-tier="ULTRA" type="button">ULTRA</button>
+            <button id="btn-q-high" class="seg-btn" data-tier="HIGH" type="button">HIGH</button>
+            <button id="btn-q-balanced" class="seg-btn" data-tier="BALANCED" type="button">BALANCED</button>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <span class="setting-label">ADAPTIVE FPS</span>
+          <div class="toggle-pair">
+            <button id="btn-toggle-autoscale" class="seg-btn is-active" type="button" aria-pressed="true">AUTO-SCALE: ON</button>
+            <button id="btn-toggle-mute" class="seg-btn" type="button" aria-pressed="false">AUDIO: ACTIVE</button>
+          </div>
+        </div>
+      </div>
+
+      <section id="controls-panel" class="controls-legend" aria-label="Combat Controls Reference">
+        <h2 class="legend-heading">COMBAT TELEMETRY &amp; CONTROLS</h2>
+        <div class="legend-grid">
+          <div class="legend-item"><kbd>W A S D</kbd><span>Stride / Hydro-Skate</span></div>
+          <div class="legend-item"><kbd>MOUSE</kbd><span>Gimbal Aim &amp; Torso Track</span></div>
+          <div class="legend-item"><kbd>SHIFT</kbd><span>Quick-Boost Dodge / Skate</span></div>
+          <div class="legend-item"><kbd>SPACE</kbd><span>Assault Jump &amp; Hover Jets</span></div>
+          <div class="legend-item"><kbd>LMB</kbd><span>30mm Rotary Autocannon</span></div>
+          <div class="legend-item"><kbd>RMB</kbd><span>Tungsten Rail-Cannon</span></div>
+          <div class="legend-item"><kbd>Q / E</kbd><span>Hold: Multi-Lock Missiles</span></div>
+          <div class="legend-item"><kbd>F</kbd><span>Pulse Armor Shockwave</span></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <!-- Live Diegetic Combat HUD -->
+  <aside id="hud-root" class="hud-hidden" aria-label="Tactical Mech Heads-Up Display">
+    <!-- Top Tactical Bar -->
+    <div class="hud-top-bar">
+      <div class="hud-sector-box">
+        <span class="hud-micro-label">ENGAGEMENT PHASE</span>
+        <span id="hud-wave-label" class="hud-sector-val">WAVE 01 // RECON SQUADRON</span>
+      </div>
+
+      <div class="hud-compass-strip">
+        <span id="hud-weather-state" class="hud-weather-tag">MONSOON SQUALL</span>
+        <span class="hud-divider">|</span>
+        <span class="hud-hostiles-wrap">HOSTILES: <strong id="hud-enemies-remaining">0</strong></span>
+      </div>
+
+      <div class="hud-perf-box">
+        <span id="hud-quality-badge" class="hud-tier-tag">ULTRA</span>
+        <span id="hud-fps-readout" class="hud-fps-val">60 FPS</span>
+        <span class="hud-key-hint">[1-3] TIER &bull; [P/ESC] PAUSE</span>
+      </div>
+    </div>
+
+    <!-- Boss Dreadnought Integrity Bar -->
+    <div id="hud-boss-panel" class="hud-boss-panel is-hidden">
+      <div class="boss-header">
+        <span id="hud-boss-name" class="boss-name">COLOSSUS-09 // LEVIATHAN DREADNOUGHT</span>
+        <span id="hud-boss-substatus" class="boss-substatus">ARMOR INTEGRITY</span>
+      </div>
+      <div class="boss-bar-track">
+        <div id="hud-boss-bar-fill" class="boss-bar-fill"></div>
+      </div>
+    </div>
+
+    <!-- Projected 3D Lock-On Brackets Container -->
+    <div id="hud-lock-layer" class="hud-lock-layer"></div>
+
+    <!-- Incoming Missile & Directional Damage Alert -->
+    <div id="hud-missile-alert" class="hud-missile-alert is-hidden">
+      <span>MISSILE LOCK DETECTED // EVADE OR PULSE [F]</span>
+    </div>
+    <div id="hud-damage-flash" class="hud-damage-flash"></div>
+
+    <!-- Dynamic Center Combat Reticle -->
+    <div id="hud-reticle" class="hud-reticle">
+      <svg class="reticle-svg" viewBox="0 0 160 160" width="160" height="160">
+        <!-- Outer subtle range circle -->
+        <circle cx="80" cy="80" r="56" class="ret-ring-outer" />
+        <!-- Railgun charge arc -->
+        <circle id="reticle-rail-arc" cx="80" cy="80" r="44" class="ret-rail-arc" stroke-dasharray="276.46" stroke-dashoffset="276.46" />
+        <!-- Precision ticks -->
+        <line x1="80" y1="16" x2="80" y2="26" class="ret-tick" />
+        <line x1="80" y1="134" x2="80" y2="144" class="ret-tick" />
+        <line x1="16" y1="80" x2="26" y2="80" class="ret-tick" />
+        <line x1="134" y1="80" x2="144" y2="80" class="ret-tick" />
+        <!-- Center pip -->
+        <circle cx="80" cy="80" r="2.2" class="ret-center-pip" />
+      </svg>
+      <div id="reticle-spread-ring" class="reticle-spread-box"></div>
+      <div id="reticle-hitmarker" class="reticle-hitmarker"></div>
+      <div id="reticle-lock-counter" class="reticle-lock-readout"></div>
+    </div>
+
+    <!-- Wave / Tactical Event Center Banner -->
+    <div id="hud-banner" class="hud-banner is-hidden">
+      <div id="hud-banner-sub" class="banner-sub">SYSTEM ALERT</div>
+      <div id="hud-banner-main" class="banner-main">COMBAT MODE ENGAGED</div>
+    </div>
+
+    <!-- Bottom-Left: Chassis Integrity, Capacitor & Thermal Telemetry -->
+    <div class="hud-bottom-left">
+      <div class="telemetry-row ap-row">
+        <div class="tele-head">
+          <span class="tele-label">AP // ARMOR INTEGRITY</span>
+          <span id="val-ap" class="tele-value">10,000</span>
+        </div>
+        <div class="tele-track ap-track">
+          <div id="bar-ap-fill" class="tele-fill ap-fill"></div>
+        </div>
+      </div>
+
+      <div class="telemetry-row">
+        <div class="tele-head">
+          <span class="tele-label">EN // BOOST CAPACITOR</span>
+          <span id="val-en" class="tele-value">100%</span>
+        </div>
+        <div class="tele-track">
+          <div id="bar-en-fill" class="tele-fill en-fill"></div>
+        </div>
+      </div>
+
+      <div class="telemetry-row">
+        <div class="tele-head">
+          <span class="tele-label">THM // CORE THERMAL</span>
+          <span id="val-heat" class="tele-value">24%</span>
+        </div>
+        <div class="tele-track">
+          <div id="bar-heat-fill" class="tele-fill heat-fill"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom-Right: Weapon Systems Telemetry -->
+    <div class="hud-bottom-right">
+      <div class="weapon-slot">
+        <div class="wpn-meta">
+          <span class="wpn-key">LMB</span>
+          <span class="wpn-name">GAU-9 ROTARY AUTOCANNON</span>
+          <span id="wpn-rotary-state" class="wpn-state">READY</span>
+        </div>
+        <div class="wpn-track"><div id="wpn-rotary-bar" class="wpn-fill"></div></div>
+      </div>
+
+      <div class="weapon-slot">
+        <div class="wpn-meta">
+          <span class="wpn-key">RMB</span>
+          <span class="wpn-name">HV-88 TUNGSTEN RAILGUN</span>
+          <span id="wpn-rail-state" class="wpn-state">CHARGED</span>
+        </div>
+        <div class="wpn-track"><div id="wpn-rail-bar" class="wpn-fill amber-fill"></div></div>
+      </div>
+
+      <div class="weapon-slot">
+        <div class="wpn-meta">
+          <span class="wpn-key">Q/E</span>
+          <span class="wpn-name">VLS-12 MICRO-MISSILE PODS</span>
+          <span id="wpn-missile-locks" class="wpn-state">12 CELLS</span>
+        </div>
+        <div class="wpn-track"><div id="wpn-missile-bar" class="wpn-fill"></div></div>
+      </div>
+
+      <div class="weapon-slot">
+        <div class="wpn-meta">
+          <span class="wpn-key">F</span>
+          <span class="wpn-name">AEGIS PULSE ARMOR</span>
+          <span id="status-pulse-armor" class="wpn-state">ONLINE</span>
+        </div>
+        <div class="wpn-track"><div id="wpn-pulse-bar" class="wpn-fill cyan-fill"></div></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Tactical Pause Overlay -->
+  <section id="pause-screen" class="overlay-screen modal-overlay is-hidden" aria-label="System Pause Menu">
+    <div class="modal-card">
+      <p class="modal-kicker">SYSTEM INTERRUPT // AC-04 VANGUARD</p>
+      <h2 class="modal-heading">TACTICAL PAUSE</h2>
+
+      <div class="modal-settings">
+        <div class="setting-row">
+          <span class="setting-label">GRAPHICS QUALITY</span>
+          <div class="segmented-group" role="group" aria-label="Pause Graphics Quality">
+            <button id="pause-q-ultra" class="seg-btn is-active" data-tier="ULTRA" type="button">ULTRA</button>
+            <button id="pause-q-high" class="seg-btn" data-tier="HIGH" type="button">HIGH</button>
+            <button id="pause-q-balanced" class="seg-btn" data-tier="BALANCED" type="button">BALANCED</button>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <span class="setting-label">SYSTEM OPTIONS</span>
+          <div class="toggle-pair">
+            <button id="pause-autoscale" class="seg-btn is-active" type="button">AUTO-SCALE: ON</button>
+            <button id="pause-audio" class="seg-btn" type="button">AUDIO: ACTIVE</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="btn-resume" class="btn-primary" type="button">
+          <span class="btn-label">RESUME COMBAT</span>
+        </button>
+        <button id="btn-restart-pause" class="btn-secondary" type="button">RESTART SORTIE</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sortie Complete / Chassis Destroyed Screen -->
+  <section id="end-screen" class="overlay-screen modal-overlay is-hidden" aria-label="Mission Debrief">
+    <div class="modal-card debrief-card">
+      <p id="end-kicker" class="modal-kicker">SORTIE DEBRIEF // BASIN CLEARED</p>
+      <h2 id="end-heading" class="modal-heading">MISSION ACCOMPLISHED</h2>
+
+      <div class="debrief-metrics">
+        <div class="metric-row">
+          <span class="metric-name">COMBAT DURATION</span>
+          <span id="end-stats-time" class="metric-val">00:00</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-name">HOSTILE FRAMES DESTROYED</span>
+          <span id="end-stats-kills" class="metric-val">0</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-name">MONOLITH STRUCTURES SHATTERED</span>
+          <span id="end-stats-cover" class="metric-val">0</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-name">COMBAT RATING SCORE</span>
+          <span id="end-stats-score" class="metric-val highlight-amber">0</span>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="btn-play-again" class="btn-primary" type="button">
+          <span class="btn-label">RE-DEPLOY // NEW SORTIE</span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
