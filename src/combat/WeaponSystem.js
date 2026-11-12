@@ -1,7 +1,36 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const MAX_BOLTS = 160;
 const MAX_MISSILES = 64;
+
+/**
+ * Builds a sleek, realistic tactical micro-missile warhead with cruciform tail fins
+ * oriented along -Z (standard Three.js Object3D.lookAt forward axis).
+ */
+function createSleekMissileGeometry() {
+  const lathePts = [
+    new THREE.Vector2(0.038, -0.34),
+    new THREE.Vector2(0.056, -0.28),
+    new THREE.Vector2(0.058, 0.14),
+    new THREE.Vector2(0.036, 0.28),
+    new THREE.Vector2(0.002, 0.38),
+  ];
+  const body = new THREE.LatheGeometry(lathePts, 10);
+  // Rotate +Y nose tip toward -Z forward axis
+  body.rotateX(-Math.PI * 0.5);
+
+  const finH = new THREE.BoxGeometry(0.22, 0.012, 0.14);
+  finH.translate(0, 0, 0.24);
+  const finV = new THREE.BoxGeometry(0.012, 0.22, 0.14);
+  finV.translate(0, 0, 0.24);
+
+  const merged = mergeGeometries([body, finH, finV], false);
+  body.dispose();
+  finH.dispose();
+  finV.dispose();
+  return merged;
+}
 
 export class WeaponSystem {
   constructor(scene, arena, water, vfx, audio, onPlayerHitmarker) {
@@ -12,12 +41,11 @@ export class WeaponSystem {
     this.audio = audio;
     this.onHitmarker = onPlayerHitmarker;
 
-    // Player weapon timers & states
     this.rotaryCooldown = 0;
     this.rotaryFiring = false;
     this.rotarySpread = 0.012;
 
-    this.railCharge = 0; // 0..1
+    this.railCharge = 0;
     this.railCooldown = 0;
     this.railRecoil = 0;
     this._wasMouseR = false;
@@ -26,7 +54,7 @@ export class WeaponSystem {
     this.missileAmmo = 12;
     this.missileReloadTimer = 0;
     this.isLocking = false;
-    this.lockTargets = []; // array of enemy refs (can contain duplicates for multi-lock!)
+    this.lockTargets = [];
     this._lockTickTimer = 0;
     this._wasMissileHold = false;
 
@@ -34,6 +62,7 @@ export class WeaponSystem {
     this.pulseMaxCooldown = 9.0;
 
     this._dummy = new THREE.Object3D();
+    this._flareDummy = new THREE.Object3D();
     this._tempVec = new THREE.Vector3();
     this._tempVec2 = new THREE.Vector3();
 
@@ -42,17 +71,50 @@ export class WeaponSystem {
   }
 
   _initKineticBolts() {
-    const boltGeo = new THREE.BoxGeometry(0.09, 0.09, 2.2);
-    const boltMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      blending: THREE.AdditiveBlending,
+    // Sleek HDR tracer dart (crossed ribbons, zero blocky box edges)
+    const p1 = new THREE.PlaneGeometry(0.09, 2.4);
+    p1.rotateX(Math.PI * 0.5);
+    const p2 = new THREE.PlaneGeometry(0.09, 2.4);
+    p2.rotateX(Math.PI * 0.5);
+    p2.rotateZ(Math.PI * 0.5);
+    const boltGeo = mergeGeometries([p1, p2], false);
+    p1.dispose();
+    p2.dispose();
+
+    const boltMat = new THREE.ShaderMaterial({
       transparent: true,
-      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
       depthWrite: false,
+      side: THREE.DoubleSide,
+      vertexShader: /* glsl */ `
+        varying vec2 vUv;
+        varying vec3 vColor;
+        void main() {
+          vUv = uv;
+          #ifdef USE_INSTANCING_COLOR
+            vColor = instanceColor;
+          #else
+            vColor = vec3(1.0, 0.8, 0.4);
+          #endif
+          vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        varying vec2 vUv;
+        varying vec3 vColor;
+        void main() {
+          float core = (1.0 - smoothstep(0.04, 0.5, abs(vUv.x - 0.5))) * pow(sin(vUv.y * 3.14159), 0.7);
+          if (core < 0.02) discard;
+          vec3 hdr = mix(vColor * 2.2, vec3(5.0, 4.4, 3.2), pow(core, 2.2));
+          gl_FragColor = vec4(hdr, core);
+        }
+      `,
     });
 
     this.boltInst = new THREE.InstancedMesh(boltGeo, boltMat, MAX_BOLTS);
     this.boltInst.frustumCulled = false;
+    this.boltInst.userData.excludeAO = true;
     this.bolts = [];
     const zero = new THREE.Matrix4().makeScale(0, 0, 0);
     const col = new THREE.Color(0xffbe64);
@@ -77,22 +139,40 @@ export class WeaponSystem {
   }
 
   _initMissiles() {
-    const mGeo = new THREE.ConeGeometry(0.18, 0.95, 6);
-    mGeo.rotateX(Math.PI * 0.5);
+    // Realistic metallic grey ordnance body (NO glowing yellow cone!)
+    const mGeo = createSleekMissileGeometry();
     const mMat = new THREE.MeshStandardMaterial({
-      color: 0xd8dee4,
-      emissive: new THREE.Color(0xff6b18),
-      emissiveIntensity: 2.8,
-      roughness: 0.3,
+      color: 0x626e7a,
+      roughness: 0.34,
+      metalness: 0.82,
+      envMapIntensity: 1.4,
     });
 
     this.missileInst = new THREE.InstancedMesh(mGeo, mMat, MAX_MISSILES);
     this.missileInst.frustumCulled = false;
+
+    // Dedicated anamorphic starburst rocket motor flare right at each missile's exhaust nozzle!
+    const flareGeo = new THREE.PlaneGeometry(1.15, 1.15);
+    const flareMat = new THREE.MeshBasicMaterial({
+      map: this.vfx.textures.starFlare,
+      color: 0xffffff,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.missileFlareInst = new THREE.InstancedMesh(flareGeo, flareMat, MAX_MISSILES);
+    this.missileFlareInst.frustumCulled = false;
+    this.missileFlareInst.renderOrder = 5;
+    this.missileFlareInst.userData.excludeAO = true;
+
     this.missiles = [];
     const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+    const flareCol = new THREE.Color(0xffb858);
 
     for (let i = 0; i < MAX_MISSILES; i++) {
       this.missileInst.setMatrixAt(i, zero);
+      this.missileFlareInst.setMatrixAt(i, zero);
+      this.missileFlareInst.setColorAt(i, flareCol);
       this.missiles.push({
         active: false,
         isPlayer: true,
@@ -112,7 +192,10 @@ export class WeaponSystem {
       });
     }
     this.missileInst.instanceMatrix.needsUpdate = true;
+    this.missileFlareInst.instanceMatrix.needsUpdate = true;
+    this.missileFlareInst.instanceColor.needsUpdate = true;
     this.scene.add(this.missileInst);
+    this.scene.add(this.missileFlareInst);
     this._missileCursor = 0;
   }
 
@@ -135,9 +218,11 @@ export class WeaponSystem {
     for (let i = 0; i < MAX_MISSILES; i++) {
       this.missiles[i].active = false;
       this.missileInst.setMatrixAt(i, zero);
+      this.missileFlareInst.setMatrixAt(i, zero);
     }
     this.boltInst.instanceMatrix.needsUpdate = true;
     this.missileInst.instanceMatrix.needsUpdate = true;
+    this.missileFlareInst.instanceMatrix.needsUpdate = true;
   }
 
   spawnBolt(origin, dir, speed, damage, isPlayer = true, colorHex = 0xffc66d) {
@@ -177,6 +262,9 @@ export class WeaponSystem {
     m.age = 0;
     m.life = 5.2;
     m.trailTimer = 0;
+
+    this.missileFlareInst.setColorAt(idx, new THREE.Color(isPlayer ? 0xffc46b : 0xff6238));
+    this.missileFlareInst.instanceColor.needsUpdate = true;
   }
 
   countIncomingEnemyMissiles() {
@@ -195,7 +283,6 @@ export class WeaponSystem {
     let hitCover = null;
     const damage = Math.round(75 + 135 * chargeFactor);
 
-    // Check first concrete pillar intersection
     for (let i = 0; i < this.arena.covers.length; i++) {
       const c = this.arena.covers[i];
       if (!c.alive) continue;
@@ -211,7 +298,6 @@ export class WeaponSystem {
       }
     }
 
-    // Water plane check
     if (dir.y < -0.01) {
       const tw = -muzzle.y / dir.y;
       if (tw > 1.0 && tw < hitDist) {
@@ -222,7 +308,6 @@ export class WeaponSystem {
 
     const endPoint = muzzle.clone().addScaledVector(dir, hitDist);
 
-    // Pierce ALL enemies along the hyper-velocity slug line up to hitDist!
     let hitAnyEnemy = false;
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
@@ -247,9 +332,9 @@ export class WeaponSystem {
       this.vfx.spawnWaterSplash(endPoint.x, endPoint.z, 1.6);
     }
 
-    this.vfx.spawnLightFlash(muzzle, 0xffba58, 28, 30, 0.18);
+    this.vfx.spawnLightFlash(muzzle, 0xffba58, 24, 28, 0.16);
     this.vfx.spawnRailBeam(muzzle, endPoint);
-    this.vfx.spawnExplosion(endPoint, 0.78, 0xffaa44);
+    this.vfx.spawnExplosion(endPoint, 0.82, 0xffaa44);
     this.audio?.playRailCannon(chargeFactor);
     player.addCameraShake(0.32 * (0.5 + chargeFactor * 0.5));
     this.railRecoil = 1.0;
@@ -261,15 +346,14 @@ export class WeaponSystem {
     this.pulseCooldown = this.pulseMaxCooldown;
     const center = player.getCenterChestPos();
 
-    this.vfx.spawnShockwave(center, 1.2, 17.5, 0.48, 0x7fd8ff, 1.0);
-    this.vfx.spawnShockwave(center, 1.5, 19.0, 0.55, 0xffb258, 0.18);
-    this.vfx.spawnLightFlash(center, 0x9be4ff, 36, 42, 0.32);
+    this.vfx.spawnShockwave(center, 1.2, 17.5, 0.42, 0x7fd8ff, 1.0);
+    this.vfx.spawnShockwave(center, 1.5, 19.0, 0.48, 0xffb258, 0.18);
+    this.vfx.spawnLightFlash(center, 0x9be4ff, 32, 40, 0.28);
     this.water.spawnRipple(center.x, center.z, 2.1);
     this.vfx.spawnWaterSplash(center.x, center.z, 1.85);
     this.audio?.playPulseArmor();
     player.addCameraShake(0.35);
 
-    // Vaporize incoming enemy bolts & missiles within 18.5m
     const radSq = 18.5 * 18.5;
     for (let i = 0; i < MAX_BOLTS; i++) {
       const b = this.bolts[i];
@@ -286,7 +370,6 @@ export class WeaponSystem {
       }
     }
 
-    // Stagger & EMP-damage close hostiles
     for (const e of enemies) {
       if (!e.alive) continue;
       const ep = e.getTargetPoint();
@@ -304,7 +387,6 @@ export class WeaponSystem {
     const alive = enemies.filter((e) => e.alive);
     if (alive.length === 0) return null;
 
-    // Score enemies inside forward camera cone, cycling evenly across visible targets
     const scored = [];
     const proj = new THREE.Vector3();
     for (const e of alive) {
@@ -322,7 +404,6 @@ export class WeaponSystem {
   }
 
   _launchMissileBarrage(player, enemies) {
-    // If player tapped Q/E quickly before painting locks, auto-snap up to 6 locks onto best target!
     if (this.lockTargets.length === 0 && this.missileAmmo > 0) {
       const quickTarget = this._acquireLockCandidate(player.camera, enemies);
       if (quickTarget) {
@@ -345,10 +426,9 @@ export class WeaponSystem {
       const side = i % 2 === 0 ? -1 : 1;
       const origin = chest
         .clone()
-        .addScaledVector(rightAxis, side * (1.25 + (i % 3) * 0.16))
-        .add(new THREE.Vector3(0, 1.35, 0));
+        .addScaledVector(rightAxis, side * (1.28 + (i % 3) * 0.16))
+        .add(new THREE.Vector3(0, 1.38, 0));
 
-      // High-angle VLS fan launch for authentic Itano Circus arcing trajectories
       const fanAngle = side * (0.45 + (i / count) * 0.65);
       const launchVel = new THREE.Vector3()
         .addScaledVector(rightAxis, Math.sin(fanAngle) * 18.0)
@@ -364,10 +444,10 @@ export class WeaponSystem {
         speed: 48 + (i % 3) * 3,
       });
 
-      this.vfx.spawnPuff(origin, new THREE.Vector3(side * 3, 4, 0), 0.7, 2.4, 0.45, 0xc8d4e0);
+      this.vfx.spawnPuff(origin, new THREE.Vector3(side * 2.5, 3.8, 0), 0.55, 2.0, 0.45, 0xc2d0de);
     }
 
-    this.vfx.spawnLightFlash(chest.clone().setY(chest.y + 1.5), 0xff9436, 20, 22, 0.22);
+    this.vfx.spawnLightFlash(chest.clone().setY(chest.y + 1.5), 0xff9436, 14, 18, 0.18);
     this.audio?.playMissileLaunch(count);
     player.addCameraShake(0.16);
 
@@ -396,7 +476,7 @@ export class WeaponSystem {
         dir.normalize();
 
         this.spawnBolt(muzzle, dir, 155, 19, true, 0xffc86b);
-        this.vfx.spawnLightFlash(muzzle, 0xff9e3d, 10, 14, 0.055);
+        this.vfx.spawnLightFlash(muzzle, 0xff9e3d, 9, 13, 0.05);
         this.vfx.spawnSparks(muzzle, dir, 4, 0xffd07a, 0.65);
         this.audio?.playAutocannon();
       }
@@ -412,7 +492,6 @@ export class WeaponSystem {
       if (this.railCharge === 0) this.audio?.playRailCharge();
       this.railCharge = Math.min(1.0, this.railCharge + dt / 0.46);
       if (this.railCharge >= 1.0) {
-        // Auto-release hyper-velocity slug at peak capacitor charge
         this._fireRailCannon(player, aimPoint, 1.0, enemies);
         this.railCharge = 0;
         this.railCooldown = 1.65;
@@ -433,7 +512,6 @@ export class WeaponSystem {
         this.missileAmmo = this.maxMissileCells;
       }
     } else if (this.missileAmmo < this.maxMissileCells && !player.missileHold) {
-      // Passive cell replenishment when pods idle
       this._cellRegenAccum = (this._cellRegenAccum || 0) + dt;
       if (this._cellRegenAccum >= 0.65) {
         this._cellRegenAccum = 0;
@@ -469,10 +547,7 @@ export class WeaponSystem {
       }
     }
 
-    // 5. Simulate all Kinetic Bolts
     this._updateBolts(dt, player, enemies);
-
-    // 6. Simulate all Corkscrew Homing Missiles
     this._updateMissiles(dt, player, enemies);
   }
 
@@ -497,14 +572,12 @@ export class WeaponSystem {
       b.pos.addScaledVector(b.vel, dt);
       let consumed = false;
 
-      // Water impact
       if (b.pos.y <= 0.02) {
         consumed = true;
         if (Math.random() < 0.45) this.water.spawnRipple(b.pos.x, b.pos.z, 0.42);
         this.vfx.spawnWaterSplash(b.pos.x, b.pos.z, 0.45);
       }
 
-      // Cover impact
       if (!consumed) {
         for (let cIdx = 0; cIdx < this.arena.covers.length; cIdx++) {
           const c = this.arena.covers[cIdx];
@@ -520,7 +593,6 @@ export class WeaponSystem {
         }
       }
 
-      // Entity hit check
       if (!consumed) {
         if (b.isPlayer) {
           for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
@@ -577,16 +649,15 @@ export class WeaponSystem {
         this._dummy.scale.setScalar(zeroScale);
         this._dummy.updateMatrix();
         this.missileInst.setMatrixAt(i, this._dummy.matrix);
+        this.missileFlareInst.setMatrixAt(i, this._dummy.matrix);
         dirty = true;
         continue;
       }
 
-      // Update desired homing point
       if (m.isPlayer) {
         if (m.target && m.target.alive) {
           m.targetPos.copy(m.target.getTargetPoint());
         } else {
-          // Retarget surviving enemy if original died mid-flight!
           const next = enemies.find((e) => e.alive);
           if (next) {
             m.target = next;
@@ -600,13 +671,11 @@ export class WeaponSystem {
       const toTarget = this._tempVec.subVectors(m.targetPos, m.pos);
       const dist = toTarget.length();
 
-      // Corkscrew homing steering after initial 0.14s vertical boost clearance
       if (m.age > 0.14 && dist > 0.1) {
         const desiredDir = toTarget.divideScalar(dist);
         const curDir = m.vel.clone().normalize();
         curDir.lerp(desiredDir, Math.min(1, dt * m.turnRate)).normalize();
 
-        // Helical Itano Circus weave perpendicular to flight path, tightening near target
         m.corkscrewPhase += dt * 15.0;
         const weaveFade = THREE.MathUtils.clamp(dist / 22.0, 0.0, 1.0);
         const side = new THREE.Vector3(-curDir.z, 0, curDir.x).normalize();
@@ -619,12 +688,12 @@ export class WeaponSystem {
 
       m.pos.addScaledVector(m.vel, dt);
 
-      // Emit GPU ribbon smoke trail segment
+      // Emit turbulent Worley-eroded missile smoke ribbon
       m.trailTimer -= dt;
       if (m.trailTimer <= 0) {
-        m.trailTimer = 0.026;
-        const startCol = m.isPlayer ? 0xffae52 : 0xff5a36;
-        this.vfx.spawnTrailSegment(m.prevPos, m.pos, 0.42, 0.52, startCol, 0x566472);
+        m.trailTimer = 0.022;
+        const startCol = m.isPlayer ? 0xffb458 : 0xff5a36;
+        this.vfx.spawnTrailSegment(m.prevPos, m.pos, 0.28, 0.72, startCol, 0x566472, false);
         m.prevPos.copy(m.pos);
       }
 
@@ -636,7 +705,6 @@ export class WeaponSystem {
         this.vfx.spawnWaterSplash(m.pos.x, m.pos.z, 1.15);
       }
 
-      // Cover collision
       if (!detonated) {
         for (let cIdx = 0; cIdx < this.arena.covers.length; cIdx++) {
           const c = this.arena.covers[cIdx];
@@ -651,7 +719,6 @@ export class WeaponSystem {
         }
       }
 
-      // Entity detonation
       if (!detonated) {
         if (m.isPlayer) {
           for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
@@ -678,17 +745,32 @@ export class WeaponSystem {
         this.vfx.spawnExplosion(m.pos, 0.85, m.isPlayer ? 0xff8d2c : 0xff4e24);
         this.audio?.playExplosion(0.55);
         this._dummy.scale.setScalar(zeroScale);
+        this._dummy.updateMatrix();
+        this.missileInst.setMatrixAt(i, this._dummy.matrix);
+        this.missileFlareInst.setMatrixAt(i, this._dummy.matrix);
       } else {
         this._dummy.position.copy(m.pos);
         this._tempVec.copy(m.pos).add(m.vel);
         this._dummy.lookAt(this._tempVec);
         this._dummy.scale.set(1, 1, 1);
+        this._dummy.updateMatrix();
+        this.missileInst.setMatrixAt(i, this._dummy.matrix);
+
+        // Position rocket motor starburst flare right behind tail nozzle!
+        const backOffset = this._tempVec.copy(m.vel).normalize().multiplyScalar(-0.34);
+        this._flareDummy.position.copy(m.pos).add(backOffset);
+        this._flareDummy.quaternion.copy(player.camera.quaternion);
+        const flicker = 0.85 + Math.sin(m.age * 70.0 + i) * 0.2;
+        this._flareDummy.scale.setScalar(flicker);
+        this._flareDummy.updateMatrix();
+        this.missileFlareInst.setMatrixAt(i, this._flareDummy.matrix);
       }
-      this._dummy.updateMatrix();
-      this.missileInst.setMatrixAt(i, this._dummy.matrix);
       dirty = true;
     }
 
-    if (dirty) this.missileInst.instanceMatrix.needsUpdate = true;
+    if (dirty) {
+      this.missileInst.instanceMatrix.needsUpdate = true;
+      this.missileFlareInst.instanceMatrix.needsUpdate = true;
+    }
   }
 }

@@ -12,9 +12,9 @@ export class PlayerController {
     this.post = postPipeline;
 
     this.mech = new MechRig(textures.armor, {
-      armorColor: 0x627180,
-      trimColor: 0x38434f,
-      visorColor: 0xff7b1a,
+      armorColor: 0xbac7d4,
+      trimColor: 0x6c7a88,
+      visorColor: 0xff821c,
       thrusterColor: 0xff8f2e,
       scale: 1.0,
       role: 'PLAYER',
@@ -214,7 +214,7 @@ export class PlayerController {
   }
 
   getCenterChestPos(target = new THREE.Vector3()) {
-    return target.set(this.pos.x, this.pos.y + 2.85, this.pos.z);
+    return target.set(this.pos.x, this.pos.y + 3.25, this.pos.z);
   }
 
   /**
@@ -433,15 +433,15 @@ export class PlayerController {
 
     // Over-the-shoulder offset in camera gimbal frame
     const camQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(this.camPitch, this.camYaw, 0, 'YXZ'));
-    const shoulderOffset = new THREE.Vector3(1.42, 0.62, 8.35).applyQuaternion(camQuat);
-    const anchor = new THREE.Vector3(this.pos.x, this.pos.y + 3.65, this.pos.z);
+    const shoulderOffset = new THREE.Vector3(1.48, 0.66, 8.65).applyQuaternion(camQuat);
+    const anchor = new THREE.Vector3(this.pos.x, this.pos.y + 4.02, this.pos.z);
     const desiredCamPos = anchor.clone().add(shoulderOffset);
 
     // Prevent camera from dipping under floodwater or clipping outside colosseum steps
     desiredCamPos.y = Math.max(0.85, desiredCamPos.y);
     const camRad = Math.hypot(desiredCamPos.x, desiredCamPos.z);
-    if (camRad > 73.5) {
-      const s = 73.5 / camRad;
+    if (camRad > 66.8) {
+      const s = 66.8 / camRad;
       desiredCamPos.x *= s;
       desiredCamPos.z *= s;
     }

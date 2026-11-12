@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { MechRig } from '../entities/MechRig.js';
 
 class MechEnemy {
@@ -22,9 +23,9 @@ class MechEnemy {
     this.alive = true;
 
     this.mech = new MechRig(textures.armor, {
-      armorColor: isBoss ? 0x262c33 : (isBastion ? 0x4b4239 : 0x36403e),
-      trimColor: isBoss ? 0x5c2618 : (isBastion ? 0x2a2622 : 0x22292a),
-      visorColor: isBoss ? 0xff4814 : 0xff3b1c,
+      armorColor: isBoss ? 0x6e7b88 : (isBastion ? 0x9b8c7c : 0x7a8b86),
+      trimColor: isBoss ? 0x8e3a28 : (isBastion ? 0x564e45 : 0x4c5858),
+      visorColor: isBoss ? 0xff4614 : 0xff3b1c,
       thrusterColor: isBoss ? 0xff6218 : 0xff7728,
       scale: this.scale,
       role: type,
@@ -45,8 +46,7 @@ class MechEnemy {
     this._missileCooldown = isBoss ? 3.5 : 4.8 + Math.random() * 2.0;
     this._wakeTimer = 0;
 
-    // Boss sweeping thermal laser state
-    this.laserState = 'IDLE'; // 'IDLE' | 'CHARGE' | 'SWEEP'
+    this.laserState = 'IDLE';
     this.laserTimer = 6.5;
     this.laserSweepYaw = 0;
     if (isBoss) {
@@ -55,35 +55,59 @@ class MechEnemy {
   }
 
   _initBossThermalBeam() {
-    const beamGeo = new THREE.CylinderGeometry(0.42, 0.68, 1, 12, 1, true);
+    // Custom GLSL High-Energy Plasma Thermal Lance with turbulent corona & view-normal edge softness
+    const beamGeo = new THREE.CylinderGeometry(0.46, 0.72, 1, 18, 1, true);
     beamGeo.translate(0, 0.5, 0);
     beamGeo.rotateX(Math.PI * 0.5);
 
-    this.beamMat = new THREE.MeshBasicMaterial({
-      color: 0xff7a22,
+    this.beamMat = new THREE.ShaderMaterial({
       transparent: true,
-      opacity: 0,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
+      uniforms: {
+        uTime: { value: 0 },
+        uIntensity: { value: 0.0 },
+      },
+      vertexShader: /* glsl */ `
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        varying vec3 vViewDir;
+        void main() {
+          vUv = uv;
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          vViewDir = normalize(cameraPosition - wp.xyz);
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uTime;
+        uniform float uIntensity;
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        varying vec3 vViewDir;
+        void main() {
+          float fres = abs(dot(normalize(vWorldNormal), normalize(vViewDir)));
+          float outerCorona = pow(fres, 1.5);
+          float innerCore = pow(fres, 5.5);
+          float wave = 0.85 + 0.25 * sin(vUv.y * 48.0 - uTime * 45.0) * cos(vUv.x * 12.56 + uTime * 18.0);
+          vec3 col = vec3(2.4, 0.72, 0.14) * outerCorona * wave + vec3(6.0, 5.0, 3.4) * innerCore;
+          float alpha = clamp((outerCorona * 0.65 + innerCore) * uIntensity, 0.0, 1.0);
+          if (alpha < 0.005) discard;
+          gl_FragColor = vec4(col, alpha);
+        }
+      `,
     });
+
     this.beamMesh = new THREE.Mesh(beamGeo, this.beamMat);
     this.beamMesh.visible = false;
     this.beamMesh.frustumCulled = false;
+    this.beamMesh.userData.excludeAO = true;
     this.scene.add(this.beamMesh);
 
-    const coreGeo = new THREE.CylinderGeometry(0.14, 0.22, 1, 8, 1, true);
-    coreGeo.translate(0, 0.5, 0);
-    coreGeo.rotateX(Math.PI * 0.5);
-    this.beamCoreMat = new THREE.MeshBasicMaterial({
-      color: 0xfff0cc,
-      transparent: true,
-      opacity: 0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    this.beamCore = new THREE.Mesh(coreGeo, this.beamCoreMat);
-    this.beamMesh.add(this.beamCore);
+    this.beamImpactLight = new THREE.PointLight(0xff8424, 0, 28, 1.6);
+    this.scene.add(this.beamImpactLight);
   }
 
   getTargetPoint(out = new THREE.Vector3()) {
@@ -103,23 +127,23 @@ class MechEnemy {
     if (!this.alive) return;
     this.alive = false;
     const center = this.getTargetPoint();
-    const blastScale = this.type === 'BOSS' ? 2.6 : (this.type === 'BASTION' ? 1.45 : 1.15);
+    const blastScale = this.type === 'BOSS' ? 2.4 : (this.type === 'BASTION' ? 1.4 : 1.1);
 
     this.vfx.spawnExplosion(center, blastScale, 0xff7e21);
-    this.arena.spawnRubbleBurst(center, hitDir, this.type === 'BOSS' ? 26 : 10, 12.5);
+    this.arena.spawnRubbleBurst(center, hitDir, this.type === 'BOSS' ? 26 : 10, 12.0);
     this.water.spawnRipple(this.pos.x, this.pos.z, 1.9);
-    this.vfx.spawnWaterSplash(this.pos.x, this.pos.z, 1.6 * this.scale);
+    this.vfx.spawnWaterSplash(this.pos.x, this.pos.z, 1.5 * this.scale);
     this.audio?.playExplosion(this.type === 'BOSS' ? 1.3 : 0.9);
 
     this.scene.remove(this.mech.root);
-    if (this.beamMesh) {
-      this.scene.remove(this.beamMesh);
-    }
+    if (this.beamMesh) this.scene.remove(this.beamMesh);
+    if (this.beamImpactLight) this.scene.remove(this.beamImpactLight);
   }
 
   dispose() {
     this.scene.remove(this.mech.root);
     if (this.beamMesh) this.scene.remove(this.beamMesh);
+    if (this.beamImpactLight) this.scene.remove(this.beamImpactLight);
   }
 
   update(dt, elapsed, player, weapons) {
@@ -142,7 +166,6 @@ class MechEnemy {
     const maxSpeed = isBoss ? 8.2 : (isStriker ? 18.5 : 9.8);
     const preferredRange = isBoss ? 34.0 : (isStriker ? 24.0 : 38.0);
 
-    // Allow Boss to wade inside from outer North floodgate before clamping to arenaRadius
     const insideArena = Math.hypot(this.pos.x, this.pos.z) < this.arena.arenaRadius - 4.0;
 
     const fwd = new THREE.Vector3(toPlayer.x, 0, toPlayer.z).normalize();
@@ -165,7 +188,6 @@ class MechEnemy {
     this.arena.resolveHorizontalCollision(this.pos, this.radius, insideArena);
     this.pos.y = this.arena.getGroundHeight(this.pos.x, this.pos.z);
 
-    // Smooth yaw turn
     const turnSpeed = this.laserState === 'SWEEP' ? 1.2 : (isBoss ? 2.6 : 6.0);
     const yawDiff = Math.atan2(Math.sin(desiredYaw - this.yaw), Math.cos(desiredYaw - this.yaw));
     this.yaw += yawDiff * Math.min(1, dt * turnSpeed);
@@ -184,7 +206,6 @@ class MechEnemy {
       }
     }
 
-    // Standard kinetic bursts
     this._fireCooldown -= dt;
     let rotaryActive = false;
     if (this._fireCooldown <= 0 && horizDist < 95 && this.laserState === 'IDLE') {
@@ -198,11 +219,10 @@ class MechEnemy {
 
       const boltDmg = isBoss ? 88 : (isStriker ? 52 : 68);
       weapons.spawnBolt(muzzle, aimDir, isBoss ? 112 : 96, boltDmg, false, 0xff5528);
-      this.vfx.spawnLightFlash(muzzle, 0xff5a28, 8, 12, 0.05);
+      this.vfx.spawnLightFlash(muzzle, 0xff5a28, 7, 12, 0.05);
       this._fireCooldown = isBoss ? 0.16 : (isStriker ? 0.28 : 0.36);
     }
 
-    // Arcing Homing Missile Salvos (Bastion & Leviathan Boss)
     if (this.type === 'BASTION' || isBoss) {
       this._missileCooldown -= dt;
       this.mech.setMissilePodsOpen(this._missileCooldown < 1.1 ? 1.0 : 0.0);
@@ -231,9 +251,8 @@ class MechEnemy {
       }
     }
 
-    // Boss Sweeping Thermal Laser Attack (boils floodwater & shatters cover!)
     if (isBoss) {
-      this._updateBossLaser(dt, player, playerPos);
+      this._updateBossLaser(dt, elapsed, player, playerPos);
     }
 
     const aimPitch = -Math.atan2(toPlayer.y, Math.max(horizDist, 1.0));
@@ -261,8 +280,9 @@ class MechEnemy {
     });
   }
 
-  _updateBossLaser(dt, player, playerPos) {
+  _updateBossLaser(dt, elapsed, player, playerPos) {
     this.laserTimer -= dt;
+    this.beamMat.uniforms.uTime.value = elapsed;
 
     if (this.laserState === 'IDLE' && this.laserTimer <= 0) {
       this.laserState = 'CHARGE';
@@ -274,14 +294,17 @@ class MechEnemy {
       this.audio?.playRailCharge();
     } else if (this.laserState === 'CHARGE') {
       const muzzle = this.mech.getLeftMuzzleWorldPos(new THREE.Vector3());
-      const dir = new THREE.Vector3(Math.sin(this.laserSweepYaw), -0.09, Math.cos(this.laserSweepYaw)).normalize();
+      const distP = Math.max(20.0, Math.hypot(playerPos.x - muzzle.x, playerPos.z - muzzle.z));
+      const pitchY = THREE.MathUtils.clamp((0.35 - muzzle.y) / distP, -0.34, -0.18);
+      const dir = new THREE.Vector3(Math.sin(this.laserSweepYaw), pitchY, Math.cos(this.laserSweepYaw)).normalize();
       const targetPt = muzzle.clone().addScaledVector(dir, 85);
 
       this.beamMesh.position.copy(muzzle);
       this.beamMesh.lookAt(targetPt);
       this.beamMesh.scale.set(0.18, 0.18, 85);
-      this.beamMat.opacity = 0.45;
-      this.beamCoreMat.opacity = 0.65;
+      this.beamMat.uniforms.uIntensity.value = 0.46;
+      this.beamImpactLight.intensity = 5.0;
+      this.beamImpactLight.position.copy(muzzle);
 
       if (this.laserTimer <= 0) {
         this.laserState = 'SWEEP';
@@ -289,9 +312,12 @@ class MechEnemy {
         this.audio?.playRailCannon(1.0);
       }
     } else if (this.laserState === 'SWEEP') {
+      this.beamMesh.visible = true;
       this.laserSweepYaw += dt * 0.48;
       const muzzle = this.mech.getLeftMuzzleWorldPos(new THREE.Vector3());
-      const dir = new THREE.Vector3(Math.sin(this.laserSweepYaw), -0.095, Math.cos(this.laserSweepYaw)).normalize();
+      const distP = Math.max(20.0, Math.hypot(playerPos.x - muzzle.x, playerPos.z - muzzle.z));
+      const pitchY = THREE.MathUtils.clamp((0.25 - muzzle.y) / distP, -0.34, -0.18);
+      const dir = new THREE.Vector3(Math.sin(this.laserSweepYaw), pitchY, Math.cos(this.laserSweepYaw)).normalize();
 
       let maxLen = 92.0;
       if (dir.y < -0.01) {
@@ -299,7 +325,6 @@ class MechEnemy {
         if (tWater > 2 && tWater < maxLen) maxLen = tWater;
       }
 
-      // Check destructible cover hit along beam
       for (const c of this.arena.covers) {
         if (!c.alive) continue;
         const toC = new THREE.Vector3(c.x - muzzle.x, 0, c.z - muzzle.z);
@@ -316,22 +341,22 @@ class MechEnemy {
       const endPt = muzzle.clone().addScaledVector(dir, maxLen);
       this.beamMesh.position.copy(muzzle);
       this.beamMesh.lookAt(endPt);
-      this.beamMesh.scale.set(1.25, 1.25, maxLen);
-      this.beamMat.opacity = 0.88;
-      this.beamCoreMat.opacity = 0.98;
+      this.beamMesh.scale.set(1.42, 1.42, maxLen);
+      this.beamMat.uniforms.uIntensity.value = 1.0;
 
-      // Boil floodwater with rising steam walls & ripples where thermal laser strikes!
+      this.beamImpactLight.position.copy(endPt).setY(Math.max(0.8, endPt.y + 0.8));
+      this.beamImpactLight.intensity = 28.0;
+
       if (endPt.y <= 0.25) {
         this._steamTick = (this._steamTick || 0) - dt;
         if (this._steamTick <= 0) {
-          this._steamTick = 0.055;
-          this.water.spawnRipple(endPt.x, endPt.z, 0.95);
-          this.vfx.spawnSteamPlume(endPt.x, endPt.z, 1.25);
-          this.vfx.spawnSparks(endPt, null, 4, 0xffaa44, 0.8);
+          this._steamTick = 0.045;
+          this.water.spawnRipple(endPt.x, endPt.z, 1.15);
+          this.vfx.spawnSteamPlume(endPt.x, endPt.z, 1.45);
+          this.vfx.spawnSparks(endPt, null, 6, 0xffaa44, 0.95);
         }
       }
 
-      // Check player laser hit (can jump over or hide behind column!)
       const pCenter = player.getCenterChestPos();
       const toP = pCenter.clone().sub(muzzle);
       const projP = toP.dot(dir);
@@ -350,6 +375,7 @@ class MechEnemy {
         this.laserState = 'IDLE';
         this.laserTimer = 7.5;
         this.beamMesh.visible = false;
+        this.beamImpactLight.intensity = 0;
       }
     }
   }
@@ -379,46 +405,102 @@ class VTOLDroneEnemy {
 
     this.root = new THREE.Group();
     const hullMat = new THREE.MeshStandardMaterial({
-      color: 0x2f3840,
+      color: 0x6e7d8c,
       map: textures.armor.albedoTex,
       normalMap: textures.armor.normalTex,
-      roughness: 0.35,
-      metalness: 0.85,
+      roughnessMap: textures.armor.roughTex,
+      roughness: 0.36,
+      metalness: 0.82,
+      envMapIntensity: 1.6,
     });
     const eyeMat = new THREE.MeshStandardMaterial({
       color: 0xff461c,
       emissive: new THREE.Color(0xff4218),
       emissiveIntensity: 4.5,
     });
+    const rotorGlowMat = new THREE.MeshStandardMaterial({
+      color: 0x78c8ff,
+      emissive: new THREE.Color(0x4aa8ee),
+      emissiveIntensity: 2.8,
+    });
 
-    const fuselage = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.65, 2.4), hullMat);
+    // Sculpted stealth tilt-rotor gunship fuselage, nose canopy, tail boom & twin ducted fans
+    const fuselage = new THREE.Mesh(new RoundedBoxGeometry(1.38, 0.56, 2.55, 3, 0.12), hullMat);
     fuselage.castShadow = true;
     this.root.add(fuselage);
 
+    const noseProw = new THREE.Mesh(new RoundedBoxGeometry(0.95, 0.38, 0.9, 2, 0.09), hullMat);
+    noseProw.position.set(0, -0.06, -1.32);
+    noseProw.rotation.x = 0.18;
+    this.root.add(noseProw);
+
+    const tailBoom = new THREE.Mesh(new RoundedBoxGeometry(0.42, 0.32, 1.5, 2, 0.06), hullMat);
+    tailBoom.position.set(0, 0.12, 1.65);
+    this.root.add(tailBoom);
+
+    const vTail = new THREE.Mesh(new RoundedBoxGeometry(1.1, 0.08, 0.45, 2, 0.02), hullMat);
+    vTail.position.set(0, 0.28, 2.2);
+    this.root.add(vTail);
+
     for (const side of [-1, 1]) {
-      const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.65, 0.32, 12), hullMat);
-      pod.position.set(side * 1.45, 0.1, 0.1);
-      this.root.add(pod);
+      const wing = new THREE.Mesh(new RoundedBoxGeometry(1.15, 0.12, 0.62, 2, 0.04), hullMat);
+      wing.position.set(side * 0.98, 0.08, 0.05);
+      wing.rotation.z = side * -0.08;
+      this.root.add(wing);
+
+      const shroud = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.13, 10, 20), hullMat);
+      shroud.rotation.x = Math.PI * 0.5;
+      shroud.position.set(side * 1.62, 0.08, 0.05);
+      shroud.castShadow = true;
+      this.root.add(shroud);
+
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.46, 0.04, 8, 18), rotorGlowMat);
+      ring.rotation.x = Math.PI * 0.5;
+      ring.position.set(side * 1.62, 0.02, 0.05);
+      this.root.add(ring);
     }
 
-    const sensor = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.18, 0.2), eyeMat);
-    sensor.position.set(0, -0.05, -1.22);
+    const sensor = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.12, 0.12), eyeMat);
+    sensor.position.set(0, -0.06, -1.76);
     this.root.add(sensor);
 
-    // Volumetric rain-piercing searchlight cone
-    const coneGeo = new THREE.ConeGeometry(3.8, 18, 14, 1, true);
+    // Soft-edged volumetric searchlight cone piercing the rain (excluded from GTAO!)
+    const coneGeo = new THREE.ConeGeometry(3.4, 18, 18, 1, true);
     coneGeo.translate(0, -9, 0);
     coneGeo.rotateX(-Math.PI * 0.32);
-    const coneMat = new THREE.MeshBasicMaterial({
-      color: 0xffb066,
+    const coneMat = new THREE.ShaderMaterial({
       transparent: true,
-      opacity: 0.09,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
+      vertexShader: /* glsl */ `
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        varying vec3 vViewDir;
+        void main() {
+          vUv = uv;
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          vViewDir = normalize(cameraPosition - wp.xyz);
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        varying vec3 vViewDir;
+        void main() {
+          float rim = pow(abs(dot(normalize(vWorldNormal), normalize(vViewDir))), 1.6);
+          float axialFade = pow(vUv.y, 1.5) * (1.0 - smoothstep(0.85, 1.0, vUv.y));
+          float alpha = rim * axialFade * 0.14;
+          if (alpha < 0.002) discard;
+          gl_FragColor = vec4(vec3(1.0, 0.76, 0.48), alpha);
+        }
+      `,
     });
     this.searchCone = new THREE.Mesh(coneGeo, coneMat);
-    this.searchCone.position.set(0, -0.3, -0.8);
+    this.searchCone.position.set(0, -0.25, -1.1);
+    this.searchCone.userData.excludeAO = true;
     this.root.add(this.searchCone);
 
     this.root.position.copy(this.pos);
@@ -515,7 +597,7 @@ export class EnemyDirector {
 
       const angles = [-0.65, 0.0, 0.65];
       for (const a of angles) {
-        const sp = new THREE.Vector3(Math.sin(a) * 52, 0, -Math.cos(a) * 52);
+        const sp = new THREE.Vector3(Math.sin(a) * 50, 0, -Math.cos(a) * 50);
         this.enemies.push(new MechEnemy('STRIKER', this.scene, this.textures, this.arena, this.water, this.vfx, this.audio, sp));
       }
       this.enemies.push(new VTOLDroneEnemy(this.scene, this.textures, this.water, this.vfx, this.audio, new THREE.Vector3(-28, 15, -30)));
@@ -525,10 +607,10 @@ export class EnemyDirector {
       this.callbacks.onWaveBanner?.('ENGAGEMENT PHASE 02 // STORM BREACH', 'HEAVY SIEGE DETACHMENT');
 
       for (const side of [-1, 1]) {
-        const bPos = new THREE.Vector3(side * 26, 0, -48);
+        const bPos = new THREE.Vector3(side * 26, 0, -46);
         this.enemies.push(new MechEnemy('BASTION', this.scene, this.textures, this.arena, this.water, this.vfx, this.audio, bPos));
 
-        const sPos = new THREE.Vector3(side * 48, 0, -18);
+        const sPos = new THREE.Vector3(side * 46, 0, -18);
         this.enemies.push(new MechEnemy('STRIKER', this.scene, this.textures, this.arena, this.water, this.vfx, this.audio, sPos));
       }
       this.enemies.push(new VTOLDroneEnemy(this.scene, this.textures, this.water, this.vfx, this.audio, new THREE.Vector3(0, 16, -44)));
@@ -536,7 +618,6 @@ export class EnemyDirector {
       this.weather.setMode('SUPERCELL');
       this.callbacks.onWaveBanner?.('WARNING // NORTH FLOODGATE BREACHED', 'COLOSSUS-09 // LEVIATHAN');
 
-      // Spawn Leviathan wading in through the North (-Z) amphitheater sluiceway!
       const bossSpawn = new THREE.Vector3(0, 0, -82);
       const boss = new MechEnemy('BOSS', this.scene, this.textures, this.arena, this.water, this.vfx, this.audio, bossSpawn);
       this.bossRef = boss;
@@ -570,7 +651,6 @@ export class EnemyDirector {
         if (!e._countedKill) {
           e._countedKill = true;
           this.totalKills += 1;
-          // Combat repair siphon on frame kill
           player.ap = Math.min(player.maxAp, player.ap + (e.type === 'BOSS' ? 2500 : 850));
         }
         continue;

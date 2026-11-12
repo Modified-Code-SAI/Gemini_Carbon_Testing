@@ -48,7 +48,7 @@ class IronDelugeGame {
       stencil: false,
     });
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 1.14;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -59,12 +59,12 @@ class IronDelugeGame {
     const textures = await TextureFactory.loadAll((p, msg) => this._setBootProgress(p, msg));
 
     this._setBootProgress(0.62, 'CONSTRUCTING FLOODED BRUTALIST COLOSSEUM...');
-    this.water = new WaterSystem(this.renderer, this.scene, this.quality, textures.waterNormal);
+    this.water = new WaterSystem(this.renderer, this.scene, this.quality, textures.pyroNoise);
     this.weather = new WeatherSystem(
       this.renderer,
       this.scene,
       this.quality,
-      textures.softParticle,
+      textures,
       (intensity) => this.audio.playThunder(intensity)
     );
     this.water.excludedDuringReflect.push(this.weather.rainMesh);
@@ -112,7 +112,7 @@ class IronDelugeGame {
       }
     );
 
-    this._setBootProgress(0.94, 'PRE-COMPILING PBR & WATER SHADER PROGRAMS...');
+    this._setBootProgress(0.94, 'PRE-COMPILING PBR, GTAO & VOLUMETRIC SHADERS...');
     this._setupTitleShowroomPose();
     this.renderer.compile(this.scene, this.camera);
 
@@ -131,27 +131,36 @@ class IronDelugeGame {
 
   _setupTitleShowroomPose() {
     if (!this.heroKeyLight) {
-      this.heroKeyLight = new THREE.PointLight(0x9ec4e8, 16, 26, 1.5);
+      // Raking 45-degree cool storm key light & subtle high rear rim (zero flat orange shield glare!)
+      this.heroKeyLight = new THREE.DirectionalLight(0xb4d8f8, 2.25);
+      this.heroKeyLight.position.set(-28, 24, 6);
       this.scene.add(this.heroKeyLight);
-      this.heroWarmRim = new THREE.PointLight(0xff8c32, 12, 22, 1.6);
+
+      this.heroWarmRim = new THREE.DirectionalLight(0xff9642, 0.58);
+      this.heroWarmRim.position.set(32, 26, -16);
       this.scene.add(this.heroWarmRim);
     }
+    this.heroKeyLight.intensity = 2.25;
+    this.heroWarmRim.intensity = 0.58;
+
     this.weather.lockedToWave = false;
     this.weather.setMode('MONSOON');
-    this.player.pos.set(1.8, this.arena.floorY, 14);
+
+    // Position AC-04 Vanguard along the unobstructed NE corridor directly in front of the
+    // 18-riser brutalist amphitheater staircases, vaulted colonnade arches, and ziggurat skyline!
+    this.player.pos.set(18.5, this.arena.floorY, -18.5);
     this.player.mech.root.position.copy(this.player.pos);
-    // Face heroic 3/4 front toward showroom camera (+Z) so glowing T-visor & minigun shine!
-    this.player.mech.root.rotation.y = Math.PI - 0.38;
-    this.heroKeyLight.position.set(5.5, 5.2, 21.0);
-    this.heroWarmRim.position.set(-3.2, 4.2, 11.5);
+    // Heroic 3/4 stance facing camera so T-visor, 6-barrel rotary minigun, shield, and jetpack flames all read clearly
+    this.player.mech.root.rotation.y = 2.02;
+
     this.player.mech.updateAnimation(0.016, 0, {
       speed: 0,
       isSkating: false,
       isAirborne: false,
       aimYawOffset: 0.14,
-      aimPitch: -0.05,
+      aimPitch: -0.04,
       heatRatio: 0.62,
-      boostRatio: 0.42,
+      boostRatio: 0.92,
     });
   }
 
@@ -176,6 +185,13 @@ class IronDelugeGame {
     document.querySelectorAll('[data-tier]').forEach((btn) => {
       btn.classList.toggle('is-active', btn.dataset.tier === tier);
     });
+
+    const gpuTag = document.getElementById('title-gpu-tag');
+    if (gpuTag) {
+      gpuTag.textContent = this.quality.config.gtaoEnabled
+        ? 'WEBGL2 PBR // GTAO + ACES HDR'
+        : 'WEBGL2 PBR // ACES FILMIC';
+    }
 
     const autoText = `AUTO-SCALE: ${this.quality.autoScale ? 'ON' : 'OFF'}`;
     const btnTitleAuto = document.getElementById('btn-toggle-autoscale');
@@ -278,8 +294,8 @@ class IronDelugeGame {
     this.audio.init();
     this._tryLockPointer();
 
-    if (this.heroKeyLight) this.heroKeyLight.intensity = 6.5;
-    if (this.heroWarmRim) this.heroWarmRim.intensity = 0;
+    if (this.heroKeyLight) this.heroKeyLight.intensity = 0.55;
+    if (this.heroWarmRim) this.heroWarmRim.intensity = 0.0;
 
     this.arena.resetArena();
     this.player.reset();
@@ -344,44 +360,52 @@ class IronDelugeGame {
   }
 
   _updateTitleShowroom(dt) {
-    // Low-angle cinematic orbit around AC-04 Vanguard standing knee-deep in rippling storm floodwater
-    const orbitAngle = Math.sin(this.elapsed * 0.22) * 0.62 + 0.42;
-    const dist = 10.6;
-    const targetX = this.player.pos.x - 1.8; // Offset mech slightly right so left UI panel stays clear
-    const targetZ = this.player.pos.z;
+    // Low worm's-eye cinematic camera framing AC-04 Vanguard on the right against vaulted brutalist arches
+    const sway = Math.sin(this.elapsed * 0.28) * 0.10;
+    const camAngle = 2.36 + sway; // SW of mech looking NE along the open colonnade corridor
+    const dist = 9.35;
 
-    this.camera.fov = 52;
+    // Look slightly left-and-up past the mech so AC-04 Vanguard stands heroically in the right-center frame
+    const lookX = this.player.pos.x - 1.55;
+    const lookZ = this.player.pos.z - 1.55;
+
+    this.camera.fov = 50;
     this.camera.updateProjectionMatrix();
     this.camera.position.set(
-      this.player.pos.x + Math.sin(orbitAngle) * dist - 1.2,
-      2.25 + Math.sin(this.elapsed * 0.45) * 0.22,
-      this.player.pos.z + Math.cos(orbitAngle) * dist
+      this.player.pos.x + Math.cos(camAngle) * dist,
+      1.86 + Math.sin(this.elapsed * 0.42) * 0.12,
+      this.player.pos.z + Math.sin(camAngle) * dist
     );
-    this.camera.lookAt(targetX, 2.55, targetZ);
+    this.camera.lookAt(lookX, 3.08, lookZ);
 
     this.player.mech.updateAnimation(dt, this.elapsed, {
       speed: 0,
       isSkating: false,
       isAirborne: false,
-      aimYawOffset: Math.sin(this.elapsed * 0.5) * 0.24,
-      aimPitch: -0.05,
+      aimYawOffset: 0.14 + Math.sin(this.elapsed * 0.5) * 0.12,
+      aimPitch: -0.04,
       heatRatio: 0.62,
-      boostRatio: 0.4,
+      boostRatio: 0.92,
     });
 
     this._titleRippleAccum = (this._titleRippleAccum || 0) + dt;
-    if (this._titleRippleAccum > 1.35) {
+    if (this._titleRippleAccum > 1.05) {
       this._titleRippleAccum = 0;
-      this.water.spawnRipple(this.player.pos.x - 0.7, this.player.pos.z, 0.48);
-      this.water.spawnRipple(this.player.pos.x + 0.7, this.player.pos.z, 0.48);
+      this.water.spawnRipple(this.player.pos.x - 0.72, this.player.pos.z + 0.45, 0.58);
+      this.water.spawnRipple(this.player.pos.x + 0.72, this.player.pos.z - 0.45, 0.58);
+      this.vfx.spawnSteamPlume(this.player.pos.x + 0.6, this.player.pos.z - 0.8, 0.75);
     }
 
     this.post.boostIntensity = 0.0;
-    this.post.rainLensWeight = this.weather.rainIntensity * 0.85;
+    this.post.rainLensWeight = this.weather.rainIntensity * 0.8;
   }
 
   _loop(now) {
     requestAnimationFrame((t) => this._loop(t));
+    if (this.manualStepOnly) {
+      this._lastNow = now;
+      return;
+    }
 
     const rawDt = (now - this._lastNow) * 0.001;
     this._lastNow = now;
@@ -394,7 +418,7 @@ class IronDelugeGame {
       this._updateTitleShowroom(dt);
       this.weather.update(dt, this.elapsed, this.camera);
       this.water.update(dt, this.elapsed, this.weather);
-      this.arena.update(dt, this.elapsed, this.vfx);
+      this.arena.update(dt, this.elapsed, this.vfx, this.weather);
       this.vfx.update(dt, this.camera);
     } else if (this.state === 'PLAYING') {
       this.elapsed += dt;
@@ -404,16 +428,13 @@ class IronDelugeGame {
         rotaryFiring: this.weapons.rotaryFiring,
         railRecoil: this.weapons.railRecoil,
       });
-      if (this.heroKeyLight) {
-        this.heroKeyLight.position.set(this.camera.position.x, this.camera.position.y + 2.4, this.camera.position.z);
-      }
 
       this.weapons.update(dt, this.player, this.director.enemies, true);
       this.director.update(dt, this.elapsed, this.player, this.weapons);
 
       this.weather.update(dt, this.elapsed, this.camera);
       this.water.update(dt, this.elapsed, this.weather);
-      this.arena.update(dt, this.elapsed, this.vfx);
+      this.arena.update(dt, this.elapsed, this.vfx, this.weather);
       this.vfx.update(dt, this.camera);
 
       this.post.rainLensWeight = this.weather.rainIntensity * 0.75;
@@ -433,11 +454,11 @@ class IronDelugeGame {
       this.elapsed += dt * 0.4;
       this.weather.update(dt * 0.4, this.elapsed, this.camera);
       this.water.update(dt * 0.4, this.elapsed, this.weather);
-      this.arena.update(dt * 0.4, this.elapsed, this.vfx);
+      this.arena.update(dt * 0.4, this.elapsed, this.vfx, this.weather);
       this.vfx.update(dt * 0.4, this.camera);
     }
 
-    // Render planar floodwater reflection then main HDR scene + post-processing
+    // Render planar floodwater reflection then main HDR scene + GTAO + post-processing
     this.water.updateReflection(this.camera);
     this.post.render(dt, this.elapsed);
   }
